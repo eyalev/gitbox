@@ -1,0 +1,162 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release'
+        required: true
+        default: 'v0.2.0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: gitbox-linux-x86_64
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            name: gitbox-linux-x86_64-musl
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: gitbox-linux-aarch64
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    
+    - name: Install cross-compilation tools
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+        
+    - name: Install musl tools
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev libgit2-dev
+        
+    - name: Configure cross compilation
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        echo "[target.aarch64-unknown-linux-gnu]" >> ~/.cargo/config.toml
+        echo "linker = \"aarch64-linux-gnu-gcc\"" >> ~/.cargo/config.toml
+        
+    - name: Build binary
+      run: cargo build --release --target ${{ matrix.target }}
+      
+    - name: Prepare binary
+      run: |
+        mkdir -p dist
+        cp target/${{ matrix.target }}/release/gitbox dist/${{ matrix.name }}
+        chmod +x dist/${{ matrix.name }}
+        
+    - name: Create tarball
+      run: |
+        cd dist
+        tar -czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}
+        path: dist/${{ matrix.name }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Create release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        TAG="${{ github.event.inputs.tag || github.ref_name }}"
+        
+        # Create release notes
+        cat > release_notes.md << 'EOF'
+        # gitbox v0.2.0 - Enhanced File Sync
+
+        ## 🚀 Major New Features
+
+        ### New Commands
+        - **`gitbox sync-from-remote <filename>`** - Pull files from remote repositories to current directory
+        - **`gitbox sync-all-repos`** - Sync all local repositories with their GitHub remotes  
+        - **`gitbox remove-local-repo`** - Alias for delete-local-repo command
+
+        ### Enhanced Functionality
+        - **Auto-repository creation** - sync-from-remote automatically creates missing repositories
+        - **Improved git handling** - Robust merge conflict resolution with auto-merge capabilities
+        - **TOML to JSON migration** - Backward compatible migration for .gitbox metadata files
+        - **Enhanced push/pull** - Support for unrelated histories and non-fast-forward scenarios
+
+        ## 🛠️ Technical Improvements
+        - Hard link synchronization for true file mirroring
+        - JSON metadata format with TOML backward compatibility
+        - Intelligent merge conflict resolution
+        - GitHub CLI integration for reliable operations
+
+        ## 📋 Installation
+
+        ### Ubuntu/Linux
+        ```bash
+        # Download and install the appropriate binary
+        wget https://github.com/eyalev/gitbox/releases/download/v0.2.0/gitbox-linux-x86_64.tar.gz
+        tar -xzf gitbox-linux-x86_64.tar.gz
+        sudo mv gitbox-linux-x86_64 /usr/local/bin/gitbox
+        ```
+
+        ### From Source
+        ```bash
+        cargo install --git https://github.com/eyalev/gitbox.git
+        ```
+
+        ## 📋 Command Reference
+
+        ### File Operations
+        - `gitbox sync <file> [--repo=name]` - Sync file to repository and push to GitHub
+        - `gitbox sync-from-remote <file> [--repo=name]` - Pull file from remote to current directory
+
+        ### Repository Management  
+        - `gitbox add-repo <name>` - Create new repository and push to GitHub
+        - `gitbox list-repos` - List all local repositories
+        - `gitbox delete-local-repo --get=<name>` - Delete local repository
+        - `gitbox remove-local-repo --get=<name>` - Alias for delete-local-repo
+        - `gitbox sync-all-repos` - Sync all repositories with remotes
+
+        **Requires GitHub CLI (`gh`) to be installed and authenticated.**
+        EOF
+        
+        # Create release
+        gh release create "$TAG" \
+          --title "gitbox $TAG - Enhanced File Sync" \
+          --notes-file release_notes.md \
+          artifacts/*/*
