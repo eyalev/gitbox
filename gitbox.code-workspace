@@ -1,0 +1,20 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../../../.gitbox"
+		},
+		{
+			"path": "../gitbox-tests"
+		}
+	],
+	"settings": {
+		"workbench.colorCustomizations": {
+			"activityBar.background": "#520E4D",
+			"titleBar.activeBackground": "#73146B",
+			"titleBar.activeForeground": "#FEFBFE"
+		}
+	}
+}
