@@ -2,6 +2,11 @@
 /target/
 Cargo.lock
 
+# Release artifacts
+/release/
+/dist/
+*.tar.gz
+
 # IDE
 .vscode/
 .idea/
