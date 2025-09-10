@@ -322,8 +322,19 @@ impl RepoManager {
         let mut local_metadata = GitboxMetadata::load_from_dir(&current_dir)?;
 
         // Check if file is already synced
-        if local_metadata.get_file(&original_path).is_some() {
-            return Err(anyhow::anyhow!("File is already synced to a repository"));
+        let already_synced = local_metadata.get_file(&original_path).is_some();
+        
+        if already_synced {
+            // File is already synced, just commit and push the updated content
+            println!("File is already synced. Committing updated content...");
+            
+            // Commit changes
+            self.commit_repo_changes(&repo_path, &format!("Update file: {}", original_path.file_name().unwrap().to_string_lossy()))?;
+            
+            // Push changes to remote repository
+            self.push_repo_changes(&repo_path)?;
+            
+            return Ok(());
         }
 
         // Create symlink path in repository
@@ -819,15 +830,67 @@ impl RepoManager {
     }
 
     fn push_repo_changes(&self, repo_path: &Path) -> Result<()> {
+        // First, try to pull from remote to get latest changes
+        let pull_output = std::process::Command::new("git")
+            .args(&["pull", "--no-rebase", "--allow-unrelated-histories", "origin", &self.config.default_branch])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to execute git pull")?;
+
+        if !pull_output.status.success() {
+            let stderr = String::from_utf8_lossy(&pull_output.stderr);
+            // If pull fails due to no upstream, that's OK, we'll set it up during push
+            if !stderr.contains("no upstream") && !stderr.contains("couldn't find remote ref") {
+                eprintln!("Warning: git pull failed: {}", stderr);
+            }
+        } else {
+            println!("Pulled latest changes from GitHub");
+        }
+
+        // Push to remote (with upstream setup if needed)
         let push_output = std::process::Command::new("git")
-            .args(&["push", "origin", "main"])
+            .args(&["push", "-u", "origin", &self.config.default_branch])
             .current_dir(repo_path)
             .output()
             .context("Failed to execute git push")?;
 
         if !push_output.status.success() {
             let stderr = String::from_utf8_lossy(&push_output.stderr);
-            return Err(anyhow::anyhow!("Failed to push to remote: {}", stderr));
+            
+            // If push was rejected due to non-fast-forward, try to merge and push again
+            if stderr.contains("non-fast-forward") || stderr.contains("rejected") {
+                println!("Push rejected, pulling and merging remote changes...");
+                
+                // Pull with merge strategy, allowing unrelated histories
+                let pull_merge_output = std::process::Command::new("git")
+                    .args(&["pull", "--no-rebase", "--allow-unrelated-histories", "origin", &self.config.default_branch])
+                    .current_dir(repo_path)
+                    .output()
+                    .context("Failed to execute git pull for merge")?;
+                
+                if !pull_merge_output.status.success() {
+                    let pull_stderr = String::from_utf8_lossy(&pull_merge_output.stderr);
+                    return Err(anyhow::anyhow!("Failed to pull and merge: {}", pull_stderr));
+                }
+                
+                // Try push again
+                let retry_push_output = std::process::Command::new("git")
+                    .args(&["push", "origin", &self.config.default_branch])
+                    .current_dir(repo_path)
+                    .output()
+                    .context("Failed to execute retry git push")?;
+                
+                if !retry_push_output.status.success() {
+                    let retry_stderr = String::from_utf8_lossy(&retry_push_output.stderr);
+                    return Err(anyhow::anyhow!("Failed to push after merge: {}", retry_stderr));
+                }
+                
+                println!("Successfully merged and pushed changes");
+            } else {
+                return Err(anyhow::anyhow!("Failed to push to remote: {}", stderr));
+            }
+        } else {
+            println!("Pushed changes to GitHub");
         }
 
         Ok(())
