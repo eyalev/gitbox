@@ -61,6 +61,8 @@ enum Commands {
     },
     /// List all repositories
     ListRepos,
+    /// List all synced files across repositories
+    ListFiles,
     /// Sync all repositories with remotes
     SyncAllRepos,
     /// Repository operations
@@ -119,6 +121,17 @@ async fn main() -> Result<()> {
                 println!("Repositories:");
                 for repo in repos {
                     println!("  {}", repo);
+                }
+            }
+        }
+        Commands::ListFiles => {
+            let files = repo_manager.list_all_synced_files()?;
+            if files.is_empty() {
+                println!("No files are currently being synced");
+            } else {
+                println!("Synced files ({} total):", files.len());
+                for file in files {
+                    println!("  {} -> {}", file.original_path, file.repository);
                 }
             }
         }

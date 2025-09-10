@@ -7,6 +7,14 @@ use crate::config::{Config, AppInfo};
 use crate::github::GitHubClient;
 use crate::sync::{GitboxMetadata, create_link};
 
+#[derive(Debug)]
+pub struct SyncedFile {
+    pub original_path: String,
+    pub repository: String,
+    pub synced_path: String,
+    pub is_directory: bool,
+}
+
 pub struct RepoManager {
     config: Config,
     app_info: AppInfo,
@@ -384,6 +392,59 @@ impl RepoManager {
 
         repos.sort();
         Ok(repos)
+    }
+
+    pub fn list_all_synced_files(&self) -> Result<Vec<SyncedFile>> {
+        let mut all_files = Vec::new();
+        
+        // Get all repositories
+        let repos = self.list_repos()?;
+        
+        for repo_name in repos {
+            let repo_path = self.config.get_repo_path(&repo_name);
+            
+            // Load metadata from the repository
+            let metadata = GitboxMetadata::load_from_dir(&repo_path)?;
+            
+            // Add files from this repository
+            for (original_path, file_info) in metadata.files {
+                all_files.push(SyncedFile {
+                    original_path: original_path.clone(),
+                    repository: repo_name.clone(),
+                    synced_path: file_info.synced_path.to_string_lossy().to_string(),
+                    is_directory: file_info.is_directory,
+                });
+            }
+        }
+        
+        // Also check for files in the current directory that might be synced
+        let current_dir = std::env::current_dir()
+            .context("Failed to get current directory")?;
+        
+        if let Ok(local_metadata) = GitboxMetadata::load_from_dir(&current_dir) {
+            if let Some(repo_name) = local_metadata.repo_name {
+                for (original_path, file_info) in local_metadata.files {
+                    // Only add if not already in the list (avoid duplicates)
+                    let already_exists = all_files.iter().any(|f| 
+                        f.original_path == original_path && f.repository == repo_name
+                    );
+                    
+                    if !already_exists {
+                        all_files.push(SyncedFile {
+                            original_path: original_path.clone(),
+                            repository: repo_name.clone(),
+                            synced_path: file_info.synced_path.to_string_lossy().to_string(),
+                            is_directory: file_info.is_directory,
+                        });
+                    }
+                }
+            }
+        }
+        
+        // Sort by original path for consistent output
+        all_files.sort_by(|a, b| a.original_path.cmp(&b.original_path));
+        
+        Ok(all_files)
     }
 
     pub fn list_repo_files(&self, repo_name: &str) -> Result<Vec<String>> {
