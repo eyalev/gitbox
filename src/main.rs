@@ -63,6 +63,9 @@ enum Commands {
     ListRepos,
     /// List all synced files across repositories
     ListFiles,
+    /// List remote files in the default repository
+    #[command(name = "list-remote-files")]
+    ListRemoteFiles,
     /// Sync all repositories with remotes
     SyncAllRepos,
     /// Repository operations
@@ -132,6 +135,17 @@ async fn main() -> Result<()> {
                 println!("Synced files ({} total):", files.len());
                 for file in files {
                     println!("  {} -> {}", file.original_path, file.repository);
+                }
+            }
+        }
+        Commands::ListRemoteFiles => {
+            let files = repo_manager.list_remote_files().await?;
+            if files.is_empty() {
+                println!("No files found in remote repository 'gitbox-default'");
+            } else {
+                println!("Remote files in 'gitbox-default' ({} total):", files.len());
+                for file in files {
+                    println!("  {}", file);
                 }
             }
         }

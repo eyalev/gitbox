@@ -447,6 +447,40 @@ impl RepoManager {
         Ok(all_files)
     }
 
+    pub async fn list_remote_files(&mut self) -> Result<Vec<String>> {
+        let repo_name = "gitbox-default";
+        let repo_path = self.config.get_repo_path(repo_name);
+        
+        // If repository doesn't exist, create it
+        if !repo_path.exists() {
+            println!("Repository '{}' doesn't exist. Creating it...", repo_name);
+            self.add_repo(repo_name).await?;
+            println!("Repository '{}' created successfully", repo_name);
+        }
+
+        // First sync with remote to get latest files
+        self.sync_repo(repo_name)?;
+
+        // List files in the remote repository's files directory
+        let files_dir = repo_path.join("files");
+        if !files_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut files = vec![];
+        for entry in fs::read_dir(&files_dir)
+            .with_context(|| format!("Failed to read files directory: {:?}", files_dir))? {
+            let entry = entry.context("Failed to read directory entry")?;
+            let path = entry.path();
+            if let Some(name) = path.file_name() {
+                files.push(name.to_string_lossy().to_string());
+            }
+        }
+
+        files.sort();
+        Ok(files)
+    }
+
     pub fn list_repo_files(&self, repo_name: &str) -> Result<Vec<String>> {
         // Try to find the repository with fuzzy matching
         let actual_repo_name = self.find_repository(repo_name)?;
