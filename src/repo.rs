@@ -271,8 +271,8 @@ impl RepoManager {
             println!("Repository '{}' created successfully", repo_name);
         }
 
-        // First, sync the repository to get latest changes from remote
-        self.sync_repo(repo_name)?;
+        // First, pull from remote to get latest changes (without pushing)
+        self.pull_from_remote(&repo_path)?;
 
         // Check if the file exists in the repository
         let synced_file_path = repo_path.join("files").join(filename);
@@ -287,7 +287,67 @@ impl RepoManager {
 
         // Check if file already exists locally
         if destination_path.exists() {
-            return Err(anyhow::anyhow!("File '{}' already exists in current directory", filename));
+            // Check if files are different
+            let files_differ = if synced_file_path.is_dir() != destination_path.is_dir() {
+                true // Different types (file vs directory)
+            } else if synced_file_path.is_dir() {
+                // For directories, we'll assume they're different if both exist
+                // (proper directory comparison would be too complex for this context)
+                false
+            } else {
+                // Compare file contents
+                let remote_content = fs::read(&synced_file_path)
+                    .with_context(|| format!("Failed to read remote file: {:?}", synced_file_path))?;
+                let local_content = fs::read(&destination_path)
+                    .with_context(|| format!("Failed to read local file: {:?}", destination_path))?;
+                remote_content != local_content
+            };
+
+            if files_differ {
+                // Show diff and ask for confirmation
+                println!("File '{}' already exists locally but differs from remote version.", filename);
+                
+                if !synced_file_path.is_dir() && !destination_path.is_dir() {
+                    // Show diff for files
+                    let diff_output = std::process::Command::new("diff")
+                        .args(&["-u", &destination_path.to_string_lossy(), &synced_file_path.to_string_lossy()])
+                        .output();
+                    
+                    if let Ok(diff) = diff_output {
+                        let diff_text = String::from_utf8_lossy(&diff.stdout);
+                        if !diff_text.trim().is_empty() {
+                            println!("\nDifferences:");
+                            println!("{}", diff_text);
+                        }
+                    }
+                }
+                
+                print!("Overwrite local file with remote version? (y/N): ");
+                use std::io::{self, Write};
+                io::stdout().flush()?;
+                
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let input = input.trim().to_lowercase();
+                
+                if input != "y" && input != "yes" {
+                    println!("Sync cancelled.");
+                    return Ok(());
+                }
+                
+                // Remove the existing file/directory
+                if destination_path.is_dir() {
+                    fs::remove_dir_all(&destination_path)
+                        .with_context(|| format!("Failed to remove existing directory: {:?}", destination_path))?;
+                } else {
+                    fs::remove_file(&destination_path)
+                        .with_context(|| format!("Failed to remove existing file: {:?}", destination_path))?;
+                }
+            } else {
+                // Files are the same, just update metadata if needed
+                println!("Local file '{}' is already up to date with remote version.", filename);
+                return Ok(());
+            }
         }
 
         // Create hard link from repository to current directory
@@ -599,24 +659,8 @@ impl RepoManager {
             println!("Repository '{}' created successfully", repo_name);
         }
 
-        // First pull from remote to get latest changes
-        let pull_output = std::process::Command::new("git")
-            .args(&["pull", "--no-rebase", "--allow-unrelated-histories", "origin", &self.config.default_branch])
-            .current_dir(&repo_path)
-            .output()
-            .context("Failed to execute git pull")?;
-
-        if !pull_output.status.success() {
-            let stderr = String::from_utf8_lossy(&pull_output.stderr);
-            // If pull fails due to no upstream, that's an error for pull-only operation
-            if stderr.contains("no upstream") || stderr.contains("couldn't find remote ref") {
-                return Err(anyhow::anyhow!("No upstream branch found. Repository may not be properly initialized."));
-            } else {
-                return Err(anyhow::anyhow!("Failed to pull from remote: {}", stderr));
-            }
-        } else {
-            println!("Pulled latest changes from GitHub");
-        }
+        // Pull from remote to get latest changes (without pushing)
+        self.pull_from_remote(&repo_path)?;
 
         // Now sync the specific file from remote to current directory
         self.sync_from_remote(file_name, repo_name).await?;
@@ -919,6 +963,74 @@ impl RepoManager {
             }
         } else {
             println!("Pushed changes to GitHub");
+        }
+
+        Ok(())
+    }
+
+    fn pull_from_remote(&self, repo_path: &Path) -> Result<()> {
+        // Check if remote origin exists
+        let remote_check = std::process::Command::new("git")
+            .args(&["remote", "get-url", "origin"])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to check remote origin")?;
+
+        if !remote_check.status.success() {
+            return Err(anyhow::anyhow!("Repository has no remote origin configured."));
+        }
+
+        // Check if we're on the default branch, create it if it doesn't exist
+        let branch_check = std::process::Command::new("git")
+            .args(&["rev-parse", "--verify", &self.config.default_branch])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to check current branch")?;
+
+        if !branch_check.status.success() {
+            // Create the default branch if it doesn't exist
+            let create_branch = std::process::Command::new("git")
+                .args(&["checkout", "-b", &self.config.default_branch])
+                .current_dir(repo_path)
+                .output()
+                .context("Failed to create default branch")?;
+
+            if !create_branch.status.success() {
+                let stderr = String::from_utf8_lossy(&create_branch.stderr);
+                return Err(anyhow::anyhow!("Failed to create branch '{}': {}", self.config.default_branch, stderr));
+            }
+            println!("Created branch '{}'", self.config.default_branch);
+        }
+
+        // Reset any local changes to avoid conflicts with pull
+        let reset_output = std::process::Command::new("git")
+            .args(&["reset", "--hard", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to execute git reset")?;
+
+        if !reset_output.status.success() {
+            let stderr = String::from_utf8_lossy(&reset_output.stderr);
+            eprintln!("Warning: failed to reset local changes: {}", stderr);
+        }
+
+        // Pull from remote to get latest changes
+        let pull_output = std::process::Command::new("git")
+            .args(&["pull", "--no-rebase", "--allow-unrelated-histories", "origin", &self.config.default_branch])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to execute git pull")?;
+
+        if !pull_output.status.success() {
+            let stderr = String::from_utf8_lossy(&pull_output.stderr);
+            // If pull fails due to no upstream, that's an error for pull-only operation
+            if stderr.contains("no upstream") || stderr.contains("couldn't find remote ref") {
+                return Err(anyhow::anyhow!("No upstream branch found. Repository may not be properly initialized."));
+            } else {
+                return Err(anyhow::anyhow!("Failed to pull from remote: {}", stderr));
+            }
+        } else {
+            println!("Pulled latest changes from GitHub");
         }
 
         Ok(())
