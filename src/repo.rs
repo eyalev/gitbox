@@ -515,6 +515,115 @@ impl RepoManager {
         Ok(files)
     }
 
+    pub async fn sync_push(&mut self, repo_name: &str, file_path: Option<&str>) -> Result<()> {
+        let repo_path = self.config.get_repo_path(repo_name);
+        
+        // If repository doesn't exist, create it
+        if !repo_path.exists() {
+            println!("Repository '{}' doesn't exist. Creating it...", repo_name);
+            self.add_repo(repo_name).await?;
+            println!("Repository '{}' created successfully", repo_name);
+        }
+
+        if let Some(file) = file_path {
+            // Handle specific file push
+            let current_dir = std::env::current_dir()
+                .context("Failed to get current directory")?;
+            let original_path = current_dir.join(file);
+            
+            if !original_path.exists() {
+                return Err(anyhow::anyhow!("File does not exist: {}", file));
+            }
+
+            // Use the existing sync logic to sync the specific file
+            self.sync_file_with_default(file, repo_name).await?;
+            println!("File '{}' pushed to repository '{}'", file, repo_name);
+        } else {
+            // Handle repository-wide push (existing logic)
+            let status_output = std::process::Command::new("git")
+                .args(&["status", "--porcelain"])
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to execute git status")?;
+
+            if !status_output.status.success() {
+                return Err(anyhow::anyhow!("Failed to check git status"));
+            }
+
+            let has_changes = !status_output.stdout.is_empty();
+
+            if has_changes {
+                // Add all changes
+                let add_output = std::process::Command::new("git")
+                    .args(&["add", "."])
+                    .current_dir(&repo_path)
+                    .output()
+                    .context("Failed to execute git add")?;
+
+                if !add_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&add_output.stderr);
+                    return Err(anyhow::anyhow!("Failed to add changes: {}", stderr));
+                }
+
+                // Commit changes
+                let commit_output = std::process::Command::new("git")
+                    .args(&["commit", "-m", "Push local changes to remote"])
+                    .current_dir(&repo_path)
+                    .output()
+                    .context("Failed to execute git commit")?;
+
+                if !commit_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&commit_output.stderr);
+                    return Err(anyhow::anyhow!("Failed to commit changes: {}", stderr));
+                }
+
+                println!("Committed local changes");
+            } else {
+                println!("No local changes to push");
+            }
+
+            // Push to remote repository
+            self.push_repo_changes(&repo_path)?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn sync_pull(&mut self, repo_name: &str, file_name: &str) -> Result<()> {
+        let repo_path = self.config.get_repo_path(repo_name);
+        
+        // If repository doesn't exist, create it
+        if !repo_path.exists() {
+            println!("Repository '{}' doesn't exist. Creating it...", repo_name);
+            self.add_repo(repo_name).await?;
+            println!("Repository '{}' created successfully", repo_name);
+        }
+
+        // First pull from remote to get latest changes
+        let pull_output = std::process::Command::new("git")
+            .args(&["pull", "--no-rebase", "--allow-unrelated-histories", "origin", &self.config.default_branch])
+            .current_dir(&repo_path)
+            .output()
+            .context("Failed to execute git pull")?;
+
+        if !pull_output.status.success() {
+            let stderr = String::from_utf8_lossy(&pull_output.stderr);
+            // If pull fails due to no upstream, that's an error for pull-only operation
+            if stderr.contains("no upstream") || stderr.contains("couldn't find remote ref") {
+                return Err(anyhow::anyhow!("No upstream branch found. Repository may not be properly initialized."));
+            } else {
+                return Err(anyhow::anyhow!("Failed to pull from remote: {}", stderr));
+            }
+        } else {
+            println!("Pulled latest changes from GitHub");
+        }
+
+        // Now sync the specific file from remote to current directory
+        self.sync_from_remote(file_name, repo_name).await?;
+
+        Ok(())
+    }
+
     pub fn list_repo_files(&self, repo_name: &str) -> Result<Vec<String>> {
         // Try to find the repository with fuzzy matching
         let actual_repo_name = self.find_repository(repo_name)?;

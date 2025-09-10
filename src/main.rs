@@ -66,6 +66,24 @@ enum Commands {
     /// List remote files in the default repository
     #[command(name = "list-remote-files")]
     ListRemoteFiles,
+    /// Push local file changes to remote repository
+    #[command(name = "sync-push")]
+    SyncPush {
+        /// File to push (optional - if not specified, pushes all changes)
+        file: Option<String>,
+        /// Target repository (defaults to 'gitbox-default')
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Pull remote file from repository to current directory
+    #[command(name = "sync-pull")]
+    SyncPull {
+        /// File to pull from remote
+        file: String,
+        /// Source repository (defaults to 'gitbox-default')
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Sync all repositories with remotes
     SyncAllRepos,
     /// Repository operations
@@ -148,6 +166,20 @@ async fn main() -> Result<()> {
                     println!("  {}", file);
                 }
             }
+        }
+        Commands::SyncPush { file, repo } => {
+            let repo_name = repo.unwrap_or_else(|| "gitbox-default".to_string());
+            repo_manager.sync_push(&repo_name, file.as_deref()).await?;
+            if let Some(file_name) = file {
+                println!("Successfully pushed file '{}' to repository '{}'", file_name, repo_name);
+            } else {
+                println!("Successfully pushed local changes to repository '{}'", repo_name);
+            }
+        }
+        Commands::SyncPull { file, repo } => {
+            let repo_name = repo.unwrap_or_else(|| "gitbox-default".to_string());
+            repo_manager.sync_pull(&repo_name, &file).await?;
+            println!("Successfully pulled file '{}' from repository '{}'", file, repo_name);
         }
         Commands::SyncAllRepos => {
             let repos = repo_manager.list_repos()?;
