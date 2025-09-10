@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use git2::{Repository, Signature, IndexAddOption};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::os::unix::fs::MetadataExt;
 
 use crate::config::{Config, AppInfo};
 use crate::github::GitHubClient;
@@ -325,8 +326,30 @@ impl RepoManager {
         let already_synced = local_metadata.get_file(&original_path).is_some();
         
         if already_synced {
-            // File is already synced, just commit and push the updated content
-            println!("File is already synced. Committing updated content...");
+            // File is already synced, check if hard link is still intact
+            let file_info = local_metadata.get_file(&original_path).unwrap();
+            let synced_path = &file_info.synced_path;
+            
+            // Check if files are still hard linked by comparing inodes
+            let original_metadata = fs::metadata(&original_path)?;
+            let synced_metadata = fs::metadata(synced_path)?;
+            
+            let links_intact = original_metadata.ino() == synced_metadata.ino();
+            
+            if !links_intact {
+                println!("File is already synced but hard link was broken. Re-copying content...");
+                
+                // Copy the updated content to the synced location
+                fs::copy(&original_path, synced_path)?;
+                
+                // Recreate the hard link
+                let _ = fs::remove_file(&original_path);
+                fs::hard_link(synced_path, &original_path)?;
+                
+                println!("Restored hard link between files");
+            } else {
+                println!("File is already synced. Committing updated content...");
+            }
             
             // Commit changes
             self.commit_repo_changes(&repo_path, &format!("Update file: {}", original_path.file_name().unwrap().to_string_lossy()))?;
